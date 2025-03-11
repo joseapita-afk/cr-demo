@@ -15,13 +15,41 @@ const SYSTEM_PROMPT =
 const sessions = new Map();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-async function aiResponse(conversation) {
-  const response = await openai.responses.create({
+async function aiResponseStream(conversation, ws) {
+  const stream = await openai.responses.create({
     model: "gpt-5.4-mini",
     instructions: SYSTEM_PROMPT,
     input: conversation,
+    stream: true,
   });
-  return response.output_text;
+
+  const assistantSegments = [];
+  console.log("Received response chunks:");
+  for await (const event of stream) {
+    if (event.type === "response.output_text.delta") {
+      const content = event.delta;
+
+      // Send each token
+      console.log(content);
+      ws.send(JSON.stringify({
+        type: "text",
+        token: content,
+        last: false,
+      }));
+      assistantSegments.push(content);
+    }
+  }
+
+  // Store the full response for conversation history
+  conversation.push({ role: "assistant", content: assistantSegments.join("") });
+
+  // Send the final "last" token when streaming completes
+  ws.send(JSON.stringify({
+    type: "text",
+    token: "",
+    last: true,
+  }));
+  console.log("Assistant response complete.");
 }
 
 const fastify = Fastify();
@@ -55,17 +83,7 @@ fastify.register(async function (fastify) {
           const conversation = sessions.get(ws.callSid);
           conversation.push({ role: "user", content: message.voicePrompt });
 
-          const response = await aiResponse(conversation);
-          conversation.push({ role: "assistant", content: response });
-
-          ws.send(
-            JSON.stringify({
-              type: "text",
-              token: response,
-              last: true,
-            })
-          );
-          console.log("Sent response:", response);
+          aiResponseStream(conversation, ws);
           break;
         case "interrupt":
           console.log("Handling interruption.");
