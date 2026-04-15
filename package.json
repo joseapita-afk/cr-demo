@@ -14,9 +14,10 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@fastify/formbody": "^8.0.2",
     "@fastify/websocket": "^11.0.2",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
-    "openai": "^4.86.2"
+    "openai": "^6.34.0"
   }
 }

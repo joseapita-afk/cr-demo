@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import fastifyWs from "@fastify/websocket";
+import fastifyFormBody from '@fastify/formbody';
 import OpenAI from "openai";
 import dotenv from "dotenv";
 dotenv.config();
@@ -13,25 +14,28 @@ const sessions = new Map();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 async function aiResponseStream(conversation, ws) {
-  const stream = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: conversation,
+  const stream = await openai.responses.create({
+    model: "gpt-5.4-mini",
+    instructions: SYSTEM_PROMPT,
+    input: conversation,
     stream: true,
   });
 
   const assistantSegments = [];
   console.log("Received response chunks:");
-  for await (const chunk of stream) {
-    const content = chunk.choices[0]?.delta?.content || "";
+  for await (const event of stream) {
+    if (event.type === "response.output_text.delta") {
+      const content = event.delta;
 
-    // Send each token
-    console.log(content);
-    ws.send(JSON.stringify({
-      type: "text",
-      token: content,
-      last: false,
-    }));
-    assistantSegments.push(content);
+      // Send each token
+      console.log(content);
+      ws.send(JSON.stringify({
+        type: "text",
+        token: content,
+        last: false,
+      }));
+      assistantSegments.push(content);
+    }
   }
 
   // Send the final "last" token when streaming completes
@@ -48,8 +52,9 @@ async function aiResponseStream(conversation, ws) {
 }
 
 const fastify = Fastify();
+fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
-fastify.get("/twiml", async (request, reply) => {
+fastify.all("/twiml", async (request, reply) => {
   reply.type("text/xml").send(
     `<?xml version="1.0" encoding="UTF-8"?>
     <Response>
@@ -70,7 +75,7 @@ fastify.register(async function (fastify) {
           const callSid = message.callSid;
           console.log("Setup for call:", callSid);
           ws.callSid = callSid;
-          sessions.set(callSid, {conversation: [{ role: "system", content: SYSTEM_PROMPT }], lastFullResponse: []});
+          sessions.set(callSid, {conversation: [], lastFullResponse: []});
           break;
         case "prompt":
           console.log("Processing prompt:", message.voicePrompt);
