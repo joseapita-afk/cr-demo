@@ -33,23 +33,22 @@ async function aiResponseStream(conversation, ws) {
   const tools = [
     {
       type: "function",
-      function: {
-        name: "get_programming_joke",
-        description: "Fetches a programming joke",
-        parameters: {
-          type: "object",
-          properties: {},
-          required: [],
-          additionalProperties: false,
-        },
-        strict: true,
+      name: "get_programming_joke",
+      description: "Fetches a programming joke",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: false,
       },
+      strict: true,
     },
   ];
 
-  const stream = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: conversation,
+  const stream = await openai.responses.create({
+    model: "gpt-5.4-mini",
+    instructions: SYSTEM_PROMPT,
+    input: conversation,
     tools: tools,
     stream: true,
   });
@@ -57,61 +56,48 @@ async function aiResponseStream(conversation, ws) {
   const assistantSegments = [];
 
   console.log("Received response chunks:");
-  for await (const chunk of stream) {
-    const content = chunk.choices[0]?.delta?.content || "";
-    const toolCalls = chunk.choices[0].delta.tool_calls || [];
+  for await (const event of stream) {
+    if (event.type === "response.output_text.delta") {
+      const content = event.delta;
 
-    for (const toolCall of toolCalls) {
-      if (toolCall.function.name === "get_programming_joke") {
+      console.log("Chunk:", content);
+      ws.send(JSON.stringify({
+        type: "text",
+        token: content,
+        last: false,
+      }));
+      assistantSegments.push(content);
+    }
+
+    if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
+      if (event.item.name === "get_programming_joke") {
         const joke = await getJoke();
 
-        // Append tool call request and the result with the "tool" role
+        // Append tool call and result for conversation history
         conversation.push({
-          role: "assistant",
-          tool_calls: [
-            {
-              id: toolCall.id,
-              function: {
-                name: toolCall.function.name,
-                arguments: "{}",
-              },
-              type: "function",
-            },
-          ],
+          type: "function_call",
+          call_id: event.item.call_id,
+          name: event.item.name,
+          arguments: event.item.arguments,
+        });
+        conversation.push({
+          type: "function_call_output",
+          call_id: event.item.call_id,
+          output: joke,
         });
 
-        conversation.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: joke,
-        });
-
-        // Send the final "last" token when streaming completes
         ws.send(JSON.stringify({ type: "text", token: joke, last: true }));
         assistantSegments.push(joke);
         console.log("Fetched joke:", joke);
       }
     }
-
-    console.log("Chunk:", content);
-    ws.send(
-      JSON.stringify({
-        type: "text",
-        token: content,
-        last: false,
-      })
-    );
-
-    assistantSegments.push(content);
   }
 
-  ws.send(
-    JSON.stringify({
-      type: "text",
-      token: "",
-      last: true,
-    })
-  );
+  ws.send(JSON.stringify({
+    type: "text",
+    token: "",
+    last: true,
+  }));
   console.log("Assistant response complete.");
 
   const sessionData = sessions.get(ws.callSid);
@@ -150,7 +136,7 @@ fastify.register(async function (fastify) {
           console.log("Setup for call:", callSid);
           ws.callSid = callSid;
           sessions.set(callSid, {
-            conversation: [{ role: "system", content: SYSTEM_PROMPT }],
+            conversation: [],
             lastFullResponse: [],
           });
           break;
