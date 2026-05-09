@@ -475,19 +475,29 @@ fastify.register(async function (fastify) {
       const callSid = ws.callSid;
       const conversation = sessions.get(callSid) || [];
 
-      if (
-        callSid &&
-        !notifiedCalls.has(callSid) &&
-        conversation.length > 0 &&
-        hasTowServiceIntent(conversation)
-      ) {
-        console.log("CALL_CLOSED_BEFORE_COMPLETE_SEND_INCOMPLETE", callSid);
+      if (callSid && !notifiedCalls.has(callSid)) {
+        console.log("CALL_CLOSED_ANYTIME_SEND_INCOMPLETE", callSid);
 
         try {
-          const check = await extractServiceData(callSid, conversation);
-          await sendWhatsAppSummary(callSid, check.data || {}, check.call || {}, true);
+          let check = {
+            data: {},
+            call: {},
+          };
+
+          if (conversation.length > 0) {
+            check = await extractServiceData(callSid, conversation);
+          } else {
+            check.call = await getCallInfo(callSid);
+          }
+
+          await sendWhatsAppSummary(
+            callSid,
+            check.data || {},
+            check.call || {},
+            true
+          );
         } catch (error) {
-          console.error("CLOSE_INCOMPLETE_SEND_ERROR", error);
+          console.error("CLOSE_ANYTIME_INCOMPLETE_SEND_ERROR", error);
         }
       }
 
