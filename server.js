@@ -169,7 +169,13 @@ async function aiResponse(conversation) {
     "\n\nCONVERSACION:\n" +
     transcript +
     "\n\nResponde ahora como Ana. Reglas críticas:" +
-    "\n- Responde corto, natural y rápido." +
+    "\n- Responde corto, natural y rápido."+
+    "\n- Si el cliente pregunta tu nombre, responde exactamente: Me llamo Ana." +
+    "\n- Si el cliente hace una pregunta en vez de responder el dato que pediste, responde primero su pregunta de forma breve y natural." +
+    "\n- Después de responder una pregunta del cliente, vuelve una sola vez al dato pendiente, sin repetir la misma frase exacta." +
+    "\n- No repitas la misma pregunta más de una vez seguida." +
+    "\n- Si el cliente evita responder o cambia de tema varias veces, cierra diciendo exactamente: Okay, le van a devolver la llamada en un minuto para la cotización." +
+    "\n- Cuando cierres con esa frase, no hagas más preguntas." +
     "\n- No uses la palabra entendido. Usa Okay." +
     "\n- No repitas preguntas ya respondidas." +
     "\n- Haz una sola pregunta por turno." +
