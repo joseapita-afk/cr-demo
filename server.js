@@ -293,7 +293,101 @@ async function extractServiceData(callSid, conversation) {
     call,
   };
 }
+async function extractWhatsAppServiceData(from, to, conversation) {
+  const transcript = conversation
+    .map((m) => `${m.role === "assistant" ? "Ana" : "Cliente"}: ${m.content}`)
+    .join("\n");
 
+  const prompt =
+    "Extrae datos de esta conversación de WhatsApp de servicios de grúas en Panamá.\n" +
+    "Devuelve SOLO JSON válido, sin markdown.\n\n" +
+    "Campos exactos:\n" +
+    "solicitante, modelo, ubicacion, punto_referencia, destino, telefono, contacto_resuelto, ready, faltantes, servicio_permitido, tipo_no_permitido.\n\n" +
+    "Reglas:\n" +
+    "- Esta conversación es por WhatsApp escrito.\n" +
+    "- No pidas WhatsApp, porque el cliente ya está escribiendo por WhatsApp.\n" +
+    "- contacto_resuelto debe ser true si el cliente respondió a la pregunta de otro número de contacto.\n" +
+    "- Si el cliente dice no, no tengo, este mismo, el mismo, este número, aquí mismo o algo similar, contacto_resuelto debe ser true.\n" +
+    "- Si el cliente da otro número, colócalo en telefono y contacto_resuelto debe ser true.\n" +
+    "- ready debe ser true SOLO si el servicio es para auto, camioneta o maquinaria y están: solicitante, modelo, ubicacion, punto_referencia, destino y contacto_resuelto.\n" +
+    "- Si el cliente pide trasladar nevera, mueble, mercancía, materiales, cajas, electrodomésticos u objetos que no son auto, camioneta o maquinaria, servicio_permitido debe ser false y ready debe ser false.\n" +
+    "- No inventes datos.\n" +
+    "- No uses CLIENTE como solicitante.\n" +
+    "- Si falta algo obligatorio, ready debe ser false y faltantes debe listar solo lo que falta entre: SOLICITANTE, MODELO, UBICACION, PUNTO_REFERENCIA, DESTINO, RESPUESTA_CONTACTO.\n\n" +
+    "INFO WHATSAPP:\n" +
+    JSON.stringify({
+      from: from || "",
+      to: to || "",
+    }) +
+    "\n\nCONVERSACION:\n" +
+    transcript;
+
+  const response = await openai.responses.create({
+    model: MODEL,
+    input: prompt,
+  });
+
+  const raw = response.output_text || "";
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+
+  if (start < 0 || end < 0) {
+    console.log("WA_DATA_PARSE_ERROR", raw);
+    return {
+      ready: false,
+      data: {},
+      call: { from, to },
+    };
+  }
+
+  let data = {};
+
+  try {
+    data = JSON.parse(raw.slice(start, end + 1));
+  } catch (error) {
+    console.log("WA_DATA_JSON_PARSE_ERROR", raw);
+    return {
+      ready: false,
+      data: {},
+      call: { from, to },
+    };
+  }
+
+  const ready =
+    data.servicio_permitido !== false &&
+    data.solicitante &&
+    data.modelo &&
+    data.ubicacion &&
+    data.punto_referencia &&
+    data.destino &&
+    data.contacto_resuelto === true &&
+    String(data.solicitante).toUpperCase() !== "CLIENTE";
+
+  data.ready = Boolean(ready);
+
+  console.log(
+    "WA_DATA_CHECK",
+    JSON.stringify({
+      ready: data.ready,
+      solicitante: data.solicitante || "",
+      modelo: data.modelo || "",
+      ubicacion: data.ubicacion || "",
+      punto_referencia: data.punto_referencia || "",
+      destino: data.destino || "",
+      telefono: data.telefono || "",
+      contacto_resuelto: data.contacto_resuelto || false,
+      servicio_permitido: data.servicio_permitido,
+      tipo_no_permitido: data.tipo_no_permitido || "",
+      faltantes: data.faltantes || [],
+    })
+  );
+
+  return {
+    ready: data.ready,
+    data,
+    call: { from, to },
+  };
+}
 async function sendWhatsAppSummary(callSid, data = {}, call = {}, incomplete = false) {
   console.log("TRY_SEND_WHATSAPP", callSid, "incomplete:", incomplete);
 
@@ -403,10 +497,10 @@ async function sendWhatsAppSummary(callSid, data = {}, call = {}, incomplete = f
     const text = await response.text();
     console.log("WHATSAPP_NOTIFY_STATUS", response.status, text);
 
-    if (response.status >= 200 && response.status < 300) {
-      console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
-      setTimeout(() => hangupCall(callSid), 5000);
-    }
+ if (response.status >= 200 && response.status < 300 && !String(callSid).startsWith("wa:")) {
+  console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
+  setTimeout(() => hangupCall(callSid), 5000);
+}
   } catch (error) {
     console.error("WHATSAPP_NOTIFY_ERROR", error);
   }
@@ -458,7 +552,15 @@ fastify.all("/whatsapp", async (request, reply) => {
   });
 
   sessions.set(conversationKey, conversation);
+  try {
+    const check = await extractWhatsAppServiceData(from, to, conversation);
 
+    if (check.ready && !notifiedCalls.has(conversationKey)) {
+      await sendWhatsAppSummary(conversationKey, check.data, check.call, false);
+    }
+  } catch (error) {
+    console.error("WHATSAPP_EXTRACT_OR_NOTIFY_ERROR", error);
+  }
   const safeResponse = String(responseText)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
