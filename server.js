@@ -497,9 +497,42 @@ async function sendWhatsAppSummary(callSid, data = {}, call = {}, incomplete = f
     const text = await response.text();
     console.log("WHATSAPP_NOTIFY_STATUS", response.status, text);
 
- if (response.status >= 200 && response.status < 300 && !String(callSid).startsWith("wa:")) {
-  console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
-  setTimeout(() => hangupCall(callSid), 5000);
+if (response.status >= 200 && response.status < 300) {
+  try {
+    const contactOnlyText = `CONTACTO ADICIONAL DEL CLIENTE: ${variables["6"]}`;
+
+    const contactOnlyForm = new URLSearchParams({
+      From: from,
+      To: to,
+      Body: contactOnlyText,
+    });
+
+    const contactOnlyResponse = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+      {
+        method: "POST",
+        headers: {
+          Authorization:
+            "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: contactOnlyForm,
+      }
+    );
+
+    console.log(
+      "WHATSAPP_CONTACT_ONLY_STATUS",
+      contactOnlyResponse.status,
+      await contactOnlyResponse.text()
+    );
+  } catch (error) {
+    console.error("WHATSAPP_CONTACT_ONLY_ERROR", error);
+  }
+
+  if (!String(callSid).startsWith("wa:")) {
+    console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
+    setTimeout(() => hangupCall(callSid), 5000);
+  }
 }
   } catch (error) {
     console.error("WHATSAPP_NOTIFY_ERROR", error);
