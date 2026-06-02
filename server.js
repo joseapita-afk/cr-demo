@@ -39,7 +39,7 @@ const completedWhatsAppChats = new Map();
 
 console.log(
   "PATCH_VERSION",
-  "github_clean_server_whatsapp_template_v6_closed_chat_gracias"
+  "github_clean_server_whatsapp_template_v7_multiple_team_numbers"
 );
 console.log("ANA_PROMPT_ACTIVE:", SYSTEM_PROMPT.slice(0, 250));
 
@@ -59,6 +59,13 @@ function normalizeText(text) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getWhatsAppRecipients() {
+  return String(process.env.WHATSAPP_TO || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function hasVehicleServiceIntent(conversation) {
@@ -200,47 +207,50 @@ async function sendAlertDots(alertId) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
   const from = process.env.WHATSAPP_FROM;
-  const to = process.env.WHATSAPP_TO;
+  const recipients = getWhatsAppRecipients();
 
-  if (!sid || !token || !from || !to) {
+  if (!sid || !token || !from || recipients.length === 0) {
     console.log("ALERT_DOTS_ENV_MISSING");
     return;
   }
 
-  for (let i = 1; i <= 2; i++) {
-    try {
-      const form = new URLSearchParams({
-        From: from,
-        To: to,
-        Body: ".",
-      });
+  for (const recipient of recipients) {
+    for (let i = 1; i <= 2; i++) {
+      try {
+        const form = new URLSearchParams({
+          From: from,
+          To: recipient,
+          Body: ".",
+        });
 
-      const response = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-        {
-          method: "POST",
-          headers: {
-            Authorization:
-              "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: form,
-        }
-      );
+        const response = await fetch(
+          `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+          {
+            method: "POST",
+            headers: {
+              Authorization:
+                "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: form,
+          }
+        );
 
-      console.log(
-        "ALERT_DOT_STATUS",
-        alertId,
-        i,
-        response.status,
-        await response.text()
-      );
-    } catch (error) {
-      console.error("ALERT_DOT_ERROR", alertId, i, error);
-    }
+        console.log(
+          "ALERT_DOT_STATUS",
+          alertId,
+          recipient,
+          i,
+          response.status,
+          await response.text()
+        );
+      } catch (error) {
+        console.error("ALERT_DOT_ERROR", alertId, recipient, i, error);
+      }
 
-    if (i < 2) {
-      await sleep(500);
+      if (i < 2) {
+        await sleep(500);
+      }
     }
   }
 }
@@ -615,10 +625,10 @@ async function sendWhatsAppSummary(
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
   const from = process.env.WHATSAPP_FROM;
-  const to = process.env.WHATSAPP_TO;
+  const recipients = getWhatsAppRecipients();
   const contentSid = process.env.WHATSAPP_CONTENT_SID;
 
-  if (!sid || !token || !from || !to) {
+  if (!sid || !token || !from || recipients.length === 0) {
     console.log("WHATSAPP_ENV_MISSING");
     return;
   }
@@ -675,51 +685,61 @@ async function sendWhatsAppSummary(
       "\n\nLlamar al cliente lo antes posible.";
   }
 
-  const form = new URLSearchParams({
-    From: from,
-    To: to,
-  });
+  let anySuccess = false;
 
-  if (contentSid) {
-    form.append("ContentSid", contentSid);
-    form.append("ContentVariables", JSON.stringify(variables));
-    console.log(
-      "WHATSAPP_USING_TEMPLATE",
-      contentSid,
-      JSON.stringify(variables)
-    );
-  } else {
-    form.append("Body", body);
-    console.log("WHATSAPP_USING_BODY_FALLBACK");
+  for (const recipient of recipients) {
+    const form = new URLSearchParams({
+      From: from,
+      To: recipient,
+    });
+
+    if (contentSid) {
+      form.append("ContentSid", contentSid);
+      form.append("ContentVariables", JSON.stringify(variables));
+      console.log(
+        "WHATSAPP_USING_TEMPLATE",
+        recipient,
+        contentSid,
+        JSON.stringify(variables)
+      );
+    } else {
+      form.append("Body", body);
+      console.log("WHATSAPP_USING_BODY_FALLBACK", recipient);
+    }
+
+    try {
+      const response = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization:
+              "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: form,
+        }
+      );
+
+      const text = await response.text();
+      console.log(
+        "WHATSAPP_NOTIFY_STATUS",
+        recipient,
+        response.status,
+        text
+      );
+
+      if (response.status >= 200 && response.status < 300) {
+        anySuccess = true;
+      }
+    } catch (error) {
+      console.error("WHATSAPP_NOTIFY_ERROR", recipient, error);
+    }
   }
 
-  try {
-    const response = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-      {
-        method: "POST",
-        headers: {
-          Authorization:
-            "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: form,
-      }
-    );
-
-    const text = await response.text();
-    console.log("WHATSAPP_NOTIFY_STATUS", response.status, text);
-
-    if (
-      response.status >= 200 &&
-      response.status < 300 &&
-      !String(callSid).startsWith("wa:")
-    ) {
-      console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
-      setTimeout(() => hangupCall(callSid), 5000);
-    }
-  } catch (error) {
-    console.error("WHATSAPP_NOTIFY_ERROR", error);
+  if (anySuccess && !String(callSid).startsWith("wa:")) {
+    console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
+    setTimeout(() => hangupCall(callSid), 5000);
   }
 }
 
@@ -728,7 +748,7 @@ fastify.get("/", async () => {
     ok: true,
     service: "ana-200gruas",
     ws: "/ws",
-    version: "github_clean_server_whatsapp_template_v6_closed_chat_gracias",
+    version: "github_clean_server_whatsapp_template_v7_multiple_team_numbers",
   };
 });
 
