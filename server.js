@@ -414,7 +414,25 @@ fastify.get("/", async () => {
     version: "github_clean_server_whatsapp_template_v2_close",
   };
 });
+fastify.all("/whatsapp", async (request, reply) => {
+  const from = request.body?.From || "";
+  const to = request.body?.To || "";
+  const body = request.body?.Body || "";
 
+  console.log(
+    "WHATSAPP_INBOUND",
+    JSON.stringify({
+      from,
+      to,
+      body,
+    })
+  );
+
+  reply.type("text/xml").send(`
+<Response>
+  <Message>Hola, soy Ana de 200 Grúas. Recibí tu mensaje. En breve activamos la atención por WhatsApp.</Message>
+</Response>`);
+});
 fastify.all("/twiml", async (request, reply) => {
   reply.type("text/xml").send(`
 <Response>
