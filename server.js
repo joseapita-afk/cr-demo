@@ -35,10 +35,11 @@ const sessions = new Map();
 const notifiedCalls = new Set();
 const closingCalls = new Set();
 const alertDotsSent = new Set();
+const completedWhatsAppChats = new Map();
 
 console.log(
   "PATCH_VERSION",
-  "github_clean_server_whatsapp_template_v5_alerts_no_extra_contact"
+  "github_clean_server_whatsapp_template_v6_closed_chat_gracias"
 );
 console.log("ANA_PROMPT_ACTIVE:", SYSTEM_PROMPT.slice(0, 250));
 
@@ -147,6 +148,41 @@ function asksForName(text) {
   );
 }
 
+function isShortClosureReply(text) {
+  const clean = normalizeText(text);
+
+  if (!clean) return false;
+  if (clean.length > 45) return false;
+
+  return /(^|\s)(gracias|muchas gracias|ok|okay|perfecto|listo|entendido|dale|excelente|bien|esta bien|de acuerdo|bueno|correcto|👍|👌)(\s|$)/.test(
+    clean
+  );
+}
+
+function getCompletedWhatsAppChat(conversationKey) {
+  const item = completedWhatsAppChats.get(conversationKey);
+
+  if (!item) return null;
+
+  if (Date.now() > item.expiresAt) {
+    completedWhatsAppChats.delete(conversationKey);
+    return null;
+  }
+
+  return item;
+}
+
+function markWhatsAppChatCompleted(conversationKey) {
+  completedWhatsAppChats.set(conversationKey, {
+    expiresAt: Date.now() + 30 * 60 * 1000,
+    thanksAnswered: false,
+  });
+
+  setTimeout(() => {
+    completedWhatsAppChats.delete(conversationKey);
+  }, 30 * 60 * 1000);
+}
+
 async function sendAlertDots(alertId) {
   if (!alertId) return;
 
@@ -156,6 +192,10 @@ async function sendAlertDots(alertId) {
   }
 
   alertDotsSent.add(alertId);
+
+  setTimeout(() => {
+    alertDotsSent.delete(alertId);
+  }, 30 * 60 * 1000);
 
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
@@ -688,7 +728,7 @@ fastify.get("/", async () => {
     ok: true,
     service: "ana-200gruas",
     ws: "/ws",
-    version: "github_clean_server_whatsapp_template_v5_alerts_no_extra_contact",
+    version: "github_clean_server_whatsapp_template_v6_closed_chat_gracias",
   };
 });
 
@@ -707,6 +747,39 @@ fastify.all("/whatsapp", async (request, reply) => {
   );
 
   const conversationKey = `wa:${from}`;
+
+  const completedChat = getCompletedWhatsAppChat(conversationKey);
+  const incomingOnly = [{ role: "user", content: body }];
+
+  if (
+    completedChat &&
+    !hasVehicleServiceIntent(incomingOnly) &&
+    !hasUnsupportedObjectIntent(incomingOnly)
+  ) {
+    if (isShortClosureReply(body) && !completedChat.thanksAnswered) {
+      completedChat.thanksAnswered = true;
+      completedWhatsAppChats.set(conversationKey, completedChat);
+
+      reply.type("text/xml").send(`
+<Response>
+  <Message>Con gusto.</Message>
+</Response>`);
+      return;
+    }
+
+    console.log("WHATSAPP_CLOSED_CHAT_IGNORED", conversationKey, body);
+
+    reply.type("text/xml").send(`
+<Response></Response>`);
+    return;
+  }
+
+  if (completedChat && hasVehicleServiceIntent(incomingOnly)) {
+    completedWhatsAppChats.delete(conversationKey);
+    notifiedCalls.delete(conversationKey);
+    alertDotsSent.delete(conversationKey);
+  }
+
   const conversation = sessions.get(conversationKey) || [];
   const isFirstWhatsAppMessage = conversation.length === 0;
 
@@ -745,6 +818,8 @@ fastify.all("/whatsapp", async (request, reply) => {
           "Listo, ya tengo la información. Le van a devolver la llamada en un minuto para la cotización.";
 
         sessions.delete(conversationKey);
+        markWhatsAppChatCompleted(conversationKey);
+
         setTimeout(() => notifiedCalls.delete(conversationKey), 10 * 60 * 1000);
       } else {
         responseText = nextWhatsAppQuestion(check);
