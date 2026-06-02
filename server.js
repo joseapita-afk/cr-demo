@@ -428,9 +428,41 @@ fastify.all("/whatsapp", async (request, reply) => {
     })
   );
 
+  const conversationKey = `wa:${from}`;
+  const conversation = sessions.get(conversationKey) || [];
+
+  conversation.push({
+    role: "user",
+    content: body,
+  });
+
+  let responseText = "";
+
+  try {
+    responseText = await aiResponse(conversation);
+  } catch (error) {
+    console.error("WHATSAPP_AI_ERROR", error);
+    responseText =
+      "Okay, recibí su mensaje. ¿Me indica la ubicación de origen y hacia dónde habría que llevar el vehículo?";
+  }
+
+  conversation.push({
+    role: "assistant",
+    content: responseText,
+  });
+
+  sessions.set(conversationKey, conversation);
+
+  const safeResponse = String(responseText)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
   reply.type("text/xml").send(`
 <Response>
-  <Message>Hola, soy Ana de 200 Grúas. Recibí tu mensaje. En breve activamos la atención por WhatsApp.</Message>
+  <Message>${safeResponse}</Message>
 </Response>`);
 });
 fastify.all("/twiml", async (request, reply) => {
