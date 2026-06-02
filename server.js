@@ -159,7 +159,7 @@ async function hangupCall(callSid) {
   }
 }
 
-async function aiResponse(conversation) {
+async function aiResponse(conversation, channel = "voice") {
   const transcript = conversation
     .map((m) => `${m.role === "assistant" ? "Ana" : "Cliente"}: ${m.content}`)
     .join("\n");
@@ -169,6 +169,12 @@ async function aiResponse(conversation) {
     "\n\nCONVERSACION:\n" +
     transcript +
     "\n\nResponde ahora como Ana. Reglas críticas:" +
+        (channel === "whatsapp"
+      ? "\n- Estás respondiendo por WhatsApp escrito, no por llamada de voz." +
+        "\n- No preguntes por WhatsApp, porque el cliente ya está escribiendo por WhatsApp." +
+        "\n- Cuando necesites confirmar contacto, pregunta: ¿Tiene algún otro número de contacto?" +
+        "\n- Si responde este mismo, el mismo, este número, aquí mismo o algo similar, tómalo como contacto resuelto y no vuelvas a pedir contacto."
+      : "") +
     "\n- Responde corto, natural y rápido."+
     "\n- Si el cliente pregunta tu nombre, responde exactamente: Me llamo Ana." +
     "\n- Si el cliente hace una pregunta en vez de responder el dato que pediste, responde primero su pregunta de forma breve y natural." +
@@ -439,7 +445,7 @@ fastify.all("/whatsapp", async (request, reply) => {
   let responseText = "";
 
   try {
-    responseText = await aiResponse(conversation);
+    responseText = await aiResponse(conversation, "whatsapp");
   } catch (error) {
     console.error("WHATSAPP_AI_ERROR", error);
     responseText =
