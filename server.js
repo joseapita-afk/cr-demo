@@ -34,10 +34,11 @@ await fastify.register(fastifyFormbody);
 const sessions = new Map();
 const notifiedCalls = new Set();
 const closingCalls = new Set();
+const alertDotsSent = new Set();
 
 console.log(
   "PATCH_VERSION",
-  "github_clean_server_whatsapp_template_v4_whatsapp_no_extra_contact"
+  "github_clean_server_whatsapp_template_v5_alerts_no_extra_contact"
 );
 console.log("ANA_PROMPT_ACTIVE:", SYSTEM_PROMPT.slice(0, 250));
 
@@ -53,6 +54,10 @@ function normalizeText(text) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function hasVehicleServiceIntent(conversation) {
@@ -94,6 +99,110 @@ function responseIsFinal(response) {
     text.includes("para confirmarle");
 
   return finalPhrase && !hasQuestion;
+}
+
+function isWeakAnswer(text) {
+  const clean = normalizeText(text);
+  return !clean || clean === "?" || clean === "??" || clean.length < 2;
+}
+
+function lastUserReplyAfterAssistantIncludes(conversation, keywords = []) {
+  for (let i = conversation.length - 2; i >= 0; i--) {
+    const current = conversation[i];
+    const next = conversation[i + 1];
+
+    if (!current || !next) continue;
+    if (current.role !== "assistant" || next.role !== "user") continue;
+
+    const assistantText = normalizeText(current.content);
+    const found = keywords.some((keyword) =>
+      assistantText.includes(normalizeText(keyword))
+    );
+
+    if (found && !isWeakAnswer(next.content)) {
+      return next.content;
+    }
+  }
+
+  return "";
+}
+
+function isGreetingOrNonServiceStart(text) {
+  const clean = normalizeText(text);
+
+  if (!clean) return true;
+
+  const simpleGreeting =
+    /^(hola|buenas|buenos dias|buenos días|buenas tardes|buenas noches|hey|saludos|alo|aló)$/.test(
+      clean
+    );
+
+  return simpleGreeting;
+}
+
+function asksForName(text) {
+  const clean = normalizeText(text);
+  return /(como te llamas|como se llama|tu nombre|quien eres|quien habla)/.test(
+    clean
+  );
+}
+
+async function sendAlertDots(alertId) {
+  if (!alertId) return;
+
+  if (alertDotsSent.has(alertId)) {
+    console.log("ALERT_DOTS_ALREADY_SENT", alertId);
+    return;
+  }
+
+  alertDotsSent.add(alertId);
+
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from = process.env.WHATSAPP_FROM;
+  const to = process.env.WHATSAPP_TO;
+
+  if (!sid || !token || !from || !to) {
+    console.log("ALERT_DOTS_ENV_MISSING");
+    return;
+  }
+
+  for (let i = 1; i <= 2; i++) {
+    try {
+      const form = new URLSearchParams({
+        From: from,
+        To: to,
+        Body: ".",
+      });
+
+      const response = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization:
+              "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: form,
+        }
+      );
+
+      console.log(
+        "ALERT_DOT_STATUS",
+        alertId,
+        i,
+        response.status,
+        await response.text()
+      );
+    } catch (error) {
+      console.error("ALERT_DOT_ERROR", alertId, i, error);
+    }
+
+    if (i < 2) {
+      await sleep(500);
+    }
+  }
 }
 
 async function getCallInfo(callSid) {
@@ -173,9 +282,11 @@ async function aiResponse(conversation, channel = "voice") {
     "\n\nResponde ahora como Ana. Reglas críticas:" +
     (channel === "whatsapp"
       ? "\n- Estás respondiendo por WhatsApp escrito, no por llamada de voz." +
+        "\n- Si el cliente solo saluda o escribe algo general al inicio, responde con el saludo inicial normal: Buenas, servicio de grúas a la orden." +
         "\n- No preguntes por WhatsApp, teléfono ni contacto adicional. El cliente ya está escribiendo por WhatsApp y ese número se usa como contacto." +
         "\n- Considera el contacto como resuelto automáticamente en conversaciones por WhatsApp escrito." +
-        "\n- Si ya tienes ubicación, destino, punto de referencia, modelo y nombre, cierra con una frase corta y no sigas preguntando contacto."
+        "\n- Si ya tienes ubicación, destino, punto de referencia, modelo y nombre, cierra con una frase corta y no sigas preguntando contacto." +
+        "\n- Antes de pedir punto de referencia, revisa si el cliente ya dio un lugar como banco, iglesia, estación, local, edificio, entrada, garita o referencia cercana. Si ya lo dio, no lo repitas."
       : "") +
     "\n- Responde corto, natural y rápido." +
     "\n- Si el cliente pregunta tu nombre, responde exactamente: Me llamo Ana." +
@@ -313,6 +424,7 @@ async function extractWhatsAppServiceData(from, to, conversation) {
     "- No exijas otro número de contacto.\n" +
     "- Si el cliente voluntariamente da otro número, colócalo en telefono. Si no da otro número, deja telefono vacío.\n" +
     "- ready debe ser true SOLO si el servicio es para auto, camioneta o maquinaria y están: solicitante, modelo, ubicacion, punto_referencia y destino.\n" +
+    "- Si el cliente responde a una pregunta de punto de referencia con un lugar como Banco General, iglesia, gasolinera, edificio, local, entrada, garita o referencia cercana, eso cuenta como punto_referencia.\n" +
     "- Si el cliente pide trasladar nevera, mueble, mercancía, materiales, cajas, electrodomésticos u objetos que no son auto, camioneta o maquinaria, servicio_permitido debe ser false y ready debe ser false.\n" +
     "- No inventes datos.\n" +
     "- No uses CLIENTE como solicitante.\n" +
@@ -356,6 +468,18 @@ async function extractWhatsAppServiceData(from, to, conversation) {
     };
   }
 
+  if (!data.punto_referencia) {
+    const ref = lastUserReplyAfterAssistantIncludes(conversation, [
+      "punto de referencia",
+      "referencia cercano",
+      "referencia cercana",
+    ]);
+
+    if (ref) {
+      data.punto_referencia = ref;
+    }
+  }
+
   data.contacto_resuelto = true;
 
   const ready =
@@ -391,6 +515,41 @@ async function extractWhatsAppServiceData(from, to, conversation) {
     data,
     call: { from, to },
   };
+}
+
+function nextWhatsAppQuestion(check) {
+  const data = check?.data || {};
+  const faltantes = Array.isArray(data.faltantes) ? data.faltantes : [];
+
+  if (data.servicio_permitido === false) {
+    return "Solo hacemos grúas para autos, camionetas y maquinarias.";
+  }
+
+  if (!data.ubicacion && !data.destino) {
+    return "¿Me indica la ubicación de origen y hacia dónde habría que llevar el vehículo para cotizarle?";
+  }
+
+  if (!data.ubicacion || faltantes.includes("UBICACION")) {
+    return "¿Me indica la ubicación de origen, por favor?";
+  }
+
+  if (!data.destino || faltantes.includes("DESTINO")) {
+    return "¿Hacia dónde habría que llevar el vehículo?";
+  }
+
+  if (!data.punto_referencia || faltantes.includes("PUNTO_REFERENCIA")) {
+    return "¿Me da un punto de referencia cercano al origen?";
+  }
+
+  if (!data.modelo || faltantes.includes("MODELO")) {
+    return "¿Qué modelo es el vehículo?";
+  }
+
+  if (!data.solicitante || faltantes.includes("SOLICITANTE")) {
+    return "¿Me indica el nombre del solicitante?";
+  }
+
+  return "";
 }
 
 async function sendWhatsAppSummary(
@@ -511,42 +670,13 @@ async function sendWhatsAppSummary(
     const text = await response.text();
     console.log("WHATSAPP_NOTIFY_STATUS", response.status, text);
 
-    if (response.status >= 200 && response.status < 300) {
-      try {
-        const contactOnlyText = `CONTACTO ADICIONAL DEL CLIENTE: ${variables["6"]}`;
-
-        const contactOnlyForm = new URLSearchParams({
-          From: from,
-          To: to,
-          Body: contactOnlyText,
-        });
-
-        const contactOnlyResponse = await fetch(
-          `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-          {
-            method: "POST",
-            headers: {
-              Authorization:
-                "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: contactOnlyForm,
-          }
-        );
-
-        console.log(
-          "WHATSAPP_CONTACT_ONLY_STATUS",
-          contactOnlyResponse.status,
-          await contactOnlyResponse.text()
-        );
-      } catch (error) {
-        console.error("WHATSAPP_CONTACT_ONLY_ERROR", error);
-      }
-
-      if (!String(callSid).startsWith("wa:")) {
-        console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
-        setTimeout(() => hangupCall(callSid), 5000);
-      }
+    if (
+      response.status >= 200 &&
+      response.status < 300 &&
+      !String(callSid).startsWith("wa:")
+    ) {
+      console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
+      setTimeout(() => hangupCall(callSid), 5000);
     }
   } catch (error) {
     console.error("WHATSAPP_NOTIFY_ERROR", error);
@@ -558,7 +688,7 @@ fastify.get("/", async () => {
     ok: true,
     service: "ana-200gruas",
     ws: "/ws",
-    version: "github_clean_server_whatsapp_template_v3_whatsapp_contact_auto",
+    version: "github_clean_server_whatsapp_template_v5_alerts_no_extra_contact",
   };
 });
 
@@ -578,6 +708,11 @@ fastify.all("/whatsapp", async (request, reply) => {
 
   const conversationKey = `wa:${from}`;
   const conversation = sessions.get(conversationKey) || [];
+  const isFirstWhatsAppMessage = conversation.length === 0;
+
+  if (isFirstWhatsAppMessage) {
+    setTimeout(() => sendAlertDots(conversationKey), 5000);
+  }
 
   conversation.push({
     role: "user",
@@ -587,30 +722,53 @@ fastify.all("/whatsapp", async (request, reply) => {
   let responseText = "";
 
   try {
-    responseText = await aiResponse(conversation, "whatsapp");
+    if (
+      isFirstWhatsAppMessage &&
+      !hasVehicleServiceIntent(conversation) &&
+      !hasUnsupportedObjectIntent(conversation)
+    ) {
+      responseText = asksForName(body)
+        ? `Me llamo Ana. ${WELCOME_GREETING}`
+        : WELCOME_GREETING;
+    } else {
+      const check = await extractWhatsAppServiceData(from, to, conversation);
+
+      if (check.ready && !notifiedCalls.has(conversationKey)) {
+        await sendWhatsAppSummary(
+          conversationKey,
+          check.data,
+          check.call,
+          false
+        );
+
+        responseText =
+          "Listo, ya tengo la información. Le van a devolver la llamada en un minuto para la cotización.";
+
+        sessions.delete(conversationKey);
+        setTimeout(() => notifiedCalls.delete(conversationKey), 10 * 60 * 1000);
+      } else {
+        responseText = nextWhatsAppQuestion(check);
+
+        if (!responseText) {
+          responseText = await aiResponse(conversation, "whatsapp");
+        }
+      }
+    }
   } catch (error) {
-    console.error("WHATSAPP_AI_ERROR", error);
+    console.error("WHATSAPP_PROCESS_ERROR", error);
     responseText =
       "Okay, recibí su mensaje. ¿Me indica la ubicación de origen y hacia dónde habría que llevar el vehículo?";
   }
 
-  conversation.push({
-    role: "assistant",
-    content: responseText,
-  });
+  if (sessions.has(conversationKey) || !notifiedCalls.has(conversationKey)) {
+    conversation.push({
+      role: "assistant",
+      content: responseText,
+    });
 
-  sessions.set(conversationKey, conversation);
-
-  try {
-    const check = await extractWhatsAppServiceData(from, to, conversation);
-
-    if (check.ready && !notifiedCalls.has(conversationKey)) {
-      await sendWhatsAppSummary(conversationKey, check.data, check.call, false);
-      sessions.delete(conversationKey);
-      setTimeout(() => notifiedCalls.delete(conversationKey), 10 * 60 * 1000);
+    if (!notifiedCalls.has(conversationKey)) {
+      sessions.set(conversationKey, conversation);
     }
-  } catch (error) {
-    console.error("WHATSAPP_EXTRACT_OR_NOTIFY_ERROR", error);
   }
 
   const safeResponse = String(responseText)
@@ -654,6 +812,11 @@ fastify.register(async function (fastify) {
 
           ws.callSid = callSid;
           sessions.set(callSid, []);
+
+          if (callSid) {
+            setTimeout(() => sendAlertDots(callSid), 5000);
+          }
+
           break;
         }
 
