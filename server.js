@@ -1,4 +1,3 @@
-
 import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyFormbody from "@fastify/formbody";
@@ -36,11 +35,15 @@ const sessions = new Map();
 const notifiedCalls = new Set();
 const closingCalls = new Set();
 
-console.log("PATCH_VERSION", "github_clean_server_whatsapp_template_v2_close");
+console.log(
+  "PATCH_VERSION",
+  "github_clean_server_whatsapp_template_v4_whatsapp_no_extra_contact"
+);
 console.log("ANA_PROMPT_ACTIVE:", SYSTEM_PROMPT.slice(0, 250));
 
 function val(value, fallback = "") {
-  const clean = value === undefined || value === null ? "" : String(value).trim();
+  const clean =
+    value === undefined || value === null ? "" : String(value).trim();
   return clean || fallback;
 }
 
@@ -80,7 +83,6 @@ function hasUnsupportedObjectIntent(conversation) {
 
 function responseIsFinal(response) {
   const text = normalizeText(response);
-
   const hasQuestion = response.includes("?") || response.includes("¿");
 
   const finalPhrase =
@@ -169,13 +171,13 @@ async function aiResponse(conversation, channel = "voice") {
     "\n\nCONVERSACION:\n" +
     transcript +
     "\n\nResponde ahora como Ana. Reglas críticas:" +
-        (channel === "whatsapp"
+    (channel === "whatsapp"
       ? "\n- Estás respondiendo por WhatsApp escrito, no por llamada de voz." +
-        "\n- No preguntes por WhatsApp, porque el cliente ya está escribiendo por WhatsApp." +
-        "\n- Cuando necesites confirmar contacto, pregunta: ¿Tiene algún otro número de contacto?" +
-        "\n- Si responde este mismo, el mismo, este número, aquí mismo o algo similar, tómalo como contacto resuelto y no vuelvas a pedir contacto."
+        "\n- No preguntes por WhatsApp, teléfono ni contacto adicional. El cliente ya está escribiendo por WhatsApp y ese número se usa como contacto." +
+        "\n- Considera el contacto como resuelto automáticamente en conversaciones por WhatsApp escrito." +
+        "\n- Si ya tienes ubicación, destino, punto de referencia, modelo y nombre, cierra con una frase corta y no sigas preguntando contacto."
       : "") +
-    "\n- Responde corto, natural y rápido."+
+    "\n- Responde corto, natural y rápido." +
     "\n- Si el cliente pregunta tu nombre, responde exactamente: Me llamo Ana." +
     "\n- Si el cliente hace una pregunta en vez de responder el dato que pediste, responde primero su pregunta de forma breve y natural." +
     "\n- Después de responder una pregunta del cliente, vuelve una sola vez al dato pendiente, sin repetir la misma frase exacta." +
@@ -210,6 +212,7 @@ async function extractServiceData(callSid, conversation) {
     "Campos exactos:\n" +
     "solicitante, modelo, ubicacion, punto_referencia, destino, telefono, contacto_resuelto, ready, faltantes, servicio_permitido, tipo_no_permitido.\n\n" +
     "Reglas:\n" +
+    "- Esta conversación es una llamada de voz.\n" +
     "- ready debe ser true SOLO si el servicio es para auto, camioneta o maquinaria y están: solicitante, modelo, ubicacion, punto_referencia, destino y contacto_resuelto.\n" +
     "- contacto_resuelto es true si el cliente dio WhatsApp/teléfono, dijo que no tiene WhatsApp, dijo que no quiere darlo, dijo que no sabe, o pidió que lo llamen al número desde donde llama.\n" +
     "- Si el cliente dice que lo llamen al mismo número, telefono puede ser vacío, pero contacto_resuelto debe ser true.\n" +
@@ -293,6 +296,7 @@ async function extractServiceData(callSid, conversation) {
     call,
   };
 }
+
 async function extractWhatsAppServiceData(from, to, conversation) {
   const transcript = conversation
     .map((m) => `${m.role === "assistant" ? "Ana" : "Cliente"}: ${m.content}`)
@@ -305,15 +309,14 @@ async function extractWhatsAppServiceData(from, to, conversation) {
     "solicitante, modelo, ubicacion, punto_referencia, destino, telefono, contacto_resuelto, ready, faltantes, servicio_permitido, tipo_no_permitido.\n\n" +
     "Reglas:\n" +
     "- Esta conversación es por WhatsApp escrito.\n" +
-    "- No pidas WhatsApp, porque el cliente ya está escribiendo por WhatsApp.\n" +
-    "- contacto_resuelto debe ser true si el cliente respondió a la pregunta de otro número de contacto.\n" +
-    "- Si el cliente dice no, no tengo, este mismo, el mismo, este número, aquí mismo o algo similar, contacto_resuelto debe ser true.\n" +
-    "- Si el cliente da otro número, colócalo en telefono y contacto_resuelto debe ser true.\n" +
-    "- ready debe ser true SOLO si el servicio es para auto, camioneta o maquinaria y están: solicitante, modelo, ubicacion, punto_referencia, destino y contacto_resuelto.\n" +
+    "- El cliente ya está escribiendo por WhatsApp, por eso contacto_resuelto debe ser true automáticamente.\n" +
+    "- No exijas otro número de contacto.\n" +
+    "- Si el cliente voluntariamente da otro número, colócalo en telefono. Si no da otro número, deja telefono vacío.\n" +
+    "- ready debe ser true SOLO si el servicio es para auto, camioneta o maquinaria y están: solicitante, modelo, ubicacion, punto_referencia y destino.\n" +
     "- Si el cliente pide trasladar nevera, mueble, mercancía, materiales, cajas, electrodomésticos u objetos que no son auto, camioneta o maquinaria, servicio_permitido debe ser false y ready debe ser false.\n" +
     "- No inventes datos.\n" +
     "- No uses CLIENTE como solicitante.\n" +
-    "- Si falta algo obligatorio, ready debe ser false y faltantes debe listar solo lo que falta entre: SOLICITANTE, MODELO, UBICACION, PUNTO_REFERENCIA, DESTINO, RESPUESTA_CONTACTO.\n\n" +
+    "- Si falta algo obligatorio, ready debe ser false y faltantes debe listar solo lo que falta entre: SOLICITANTE, MODELO, UBICACION, PUNTO_REFERENCIA, DESTINO.\n\n" +
     "INFO WHATSAPP:\n" +
     JSON.stringify({
       from: from || "",
@@ -353,6 +356,8 @@ async function extractWhatsAppServiceData(from, to, conversation) {
     };
   }
 
+  data.contacto_resuelto = true;
+
   const ready =
     data.servicio_permitido !== false &&
     data.solicitante &&
@@ -360,7 +365,6 @@ async function extractWhatsAppServiceData(from, to, conversation) {
     data.ubicacion &&
     data.punto_referencia &&
     data.destino &&
-    data.contacto_resuelto === true &&
     String(data.solicitante).toUpperCase() !== "CLIENTE";
 
   data.ready = Boolean(ready);
@@ -388,7 +392,13 @@ async function extractWhatsAppServiceData(from, to, conversation) {
     call: { from, to },
   };
 }
-async function sendWhatsAppSummary(callSid, data = {}, call = {}, incomplete = false) {
+
+async function sendWhatsAppSummary(
+  callSid,
+  data = {},
+  call = {},
+  incomplete = false
+) {
   console.log("TRY_SEND_WHATSAPP", callSid, "incomplete:", incomplete);
 
   if (!callSid) {
@@ -474,7 +484,11 @@ async function sendWhatsAppSummary(callSid, data = {}, call = {}, incomplete = f
   if (contentSid) {
     form.append("ContentSid", contentSid);
     form.append("ContentVariables", JSON.stringify(variables));
-    console.log("WHATSAPP_USING_TEMPLATE", contentSid, JSON.stringify(variables));
+    console.log(
+      "WHATSAPP_USING_TEMPLATE",
+      contentSid,
+      JSON.stringify(variables)
+    );
   } else {
     form.append("Body", body);
     console.log("WHATSAPP_USING_BODY_FALLBACK");
@@ -497,43 +511,43 @@ async function sendWhatsAppSummary(callSid, data = {}, call = {}, incomplete = f
     const text = await response.text();
     console.log("WHATSAPP_NOTIFY_STATUS", response.status, text);
 
-if (response.status >= 200 && response.status < 300) {
-  try {
-    const contactOnlyText = `CONTACTO ADICIONAL DEL CLIENTE: ${variables["6"]}`;
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        const contactOnlyText = `CONTACTO ADICIONAL DEL CLIENTE: ${variables["6"]}`;
 
-    const contactOnlyForm = new URLSearchParams({
-      From: from,
-      To: to,
-      Body: contactOnlyText,
-    });
+        const contactOnlyForm = new URLSearchParams({
+          From: from,
+          To: to,
+          Body: contactOnlyText,
+        });
 
-    const contactOnlyResponse = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-      {
-        method: "POST",
-        headers: {
-          Authorization:
-            "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: contactOnlyForm,
+        const contactOnlyResponse = await fetch(
+          `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+          {
+            method: "POST",
+            headers: {
+              Authorization:
+                "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: contactOnlyForm,
+          }
+        );
+
+        console.log(
+          "WHATSAPP_CONTACT_ONLY_STATUS",
+          contactOnlyResponse.status,
+          await contactOnlyResponse.text()
+        );
+      } catch (error) {
+        console.error("WHATSAPP_CONTACT_ONLY_ERROR", error);
       }
-    );
 
-    console.log(
-      "WHATSAPP_CONTACT_ONLY_STATUS",
-      contactOnlyResponse.status,
-      await contactOnlyResponse.text()
-    );
-  } catch (error) {
-    console.error("WHATSAPP_CONTACT_ONLY_ERROR", error);
-  }
-
-  if (!String(callSid).startsWith("wa:")) {
-    console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
-    setTimeout(() => hangupCall(callSid), 5000);
-  }
-}
+      if (!String(callSid).startsWith("wa:")) {
+        console.log("SCHEDULE_HANGUP_AFTER_WHATSAPP");
+        setTimeout(() => hangupCall(callSid), 5000);
+      }
+    }
   } catch (error) {
     console.error("WHATSAPP_NOTIFY_ERROR", error);
   }
@@ -544,9 +558,10 @@ fastify.get("/", async () => {
     ok: true,
     service: "ana-200gruas",
     ws: "/ws",
-    version: "github_clean_server_whatsapp_template_v2_close",
+    version: "github_clean_server_whatsapp_template_v3_whatsapp_contact_auto",
   };
 });
+
 fastify.all("/whatsapp", async (request, reply) => {
   const from = request.body?.From || "";
   const to = request.body?.To || "";
@@ -585,15 +600,19 @@ fastify.all("/whatsapp", async (request, reply) => {
   });
 
   sessions.set(conversationKey, conversation);
+
   try {
     const check = await extractWhatsAppServiceData(from, to, conversation);
 
     if (check.ready && !notifiedCalls.has(conversationKey)) {
       await sendWhatsAppSummary(conversationKey, check.data, check.call, false);
+      sessions.delete(conversationKey);
+      setTimeout(() => notifiedCalls.delete(conversationKey), 10 * 60 * 1000);
     }
   } catch (error) {
     console.error("WHATSAPP_EXTRACT_OR_NOTIFY_ERROR", error);
   }
+
   const safeResponse = String(responseText)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -606,6 +625,7 @@ fastify.all("/whatsapp", async (request, reply) => {
   <Message>${safeResponse}</Message>
 </Response>`);
 });
+
 fastify.all("/twiml", async (request, reply) => {
   reply.type("text/xml").send(`
 <Response>
@@ -616,7 +636,7 @@ fastify.all("/twiml", async (request, reply) => {
 });
 
 fastify.register(async function (fastify) {
-  fastify.get("/ws", { websocket: true }, (ws, req) => {
+  fastify.get("/ws", { websocket: true }, (ws) => {
     ws.on("message", async (data) => {
       let message;
 
