@@ -37,6 +37,11 @@ const closingCalls = new Set();
 const alertDotsSent = new Set();
 const completedWhatsAppChats = new Map();
 
+const TYPING_SOUND_URL =
+  process.env.TYPING_SOUND_URL || `${DOMAIN}/typing-sound.wav`;
+
+const typingSoundCooldown = new Map();
+
 console.log(
   "PATCH_VERSION",
   "github_clean_server_whatsapp_template_v7_multiple_team_numbers"
@@ -165,7 +170,52 @@ function isShortClosureReply(text) {
     clean
   );
 }
+function isUsefulInfoForTypingSound(text) {
+  const clean = normalizeText(text);
 
+  if (!clean) return false;
+  if (isGreetingOrNonServiceStart(clean)) return false;
+  if (isShortClosureReply(clean)) return false;
+  if (clean.length < 4) return false;
+
+  return (
+    /\d/.test(clean) ||
+    /(estoy en|estoy por|queda en|llevar|llevarlo|trasladar|destino|origen|hacia|desde|al lado|frente a|cerca de|detras de|detrás de)/i.test(clean) ||
+    /(calle|avenida|via|vía|plaza|mall|estacion|estación|gasolinera|banco|iglesia|edificio|entrada|garita|referencia|parque|corredor|cinta costera|tumba muerto|transistmica|transístmica|tocumen|arraijan|arraiján|chorrera|san miguelito|parque lefevre|costa del este|chanis|pedregal|brisas|don bosco|albrook|condado|centennial|altaplaza|via espana|vía españa)/i.test(clean) ||
+    /(toyota|hyundai|kia|nissan|honda|mazda|mitsubishi|suzuki|ford|chevrolet|bmw|mercedes|audi|volkswagen|picanto|accent|tucson|rav4|rav 4|corolla|sentra|hilux|fortuner|prado|rio|cerato|yaris|versa|elantra|crv|civic|sportage)/i.test(clean) ||
+    /(me llamo|soy|mi nombre|a nombre de|whatsapp|telefono|teléfono|contacto|llamame|llámame|numero|número|mismo numero|mismo número|mismo telefono|mismo teléfono|donde llamo)/i.test(clean)
+  );
+}
+function playTypingSoundIfNeeded(ws, callSid, userText) {
+  if (!callSid || !TYPING_SOUND_URL) return false;
+  if (!ws || ws.readyState !== 1) return false;
+  if (!isUsefulInfoForTypingSound(userText)) return false;
+
+  const now = Date.now();
+  const lastPlayed = typingSoundCooldown.get(callSid) || 0;
+
+  if (now - lastPlayed < 2500) return false;
+
+  typingSoundCooldown.set(callSid, now);
+
+  try {
+    ws.send(
+      JSON.stringify({
+        type: "play",
+        source: TYPING_SOUND_URL,
+        loop: 1,
+        preemptible: false,
+        interruptible: true,
+      })
+    );
+
+    console.log("TYPING_SOUND_PLAYED", callSid);
+    return true;
+  } catch (error) {
+    console.error("TYPING_SOUND_ERROR", error);
+    return false;
+  }
+}
 function getCompletedWhatsAppChat(conversationKey) {
   const item = completedWhatsAppChats.get(conversationKey);
 
@@ -743,6 +793,63 @@ async function sendWhatsAppSummary(
   }
 }
 
+function createTypingSoundWav() {
+  const sampleRate = 8000;
+  const durationSeconds = 0.65;
+  const numSamples = Math.floor(sampleRate * durationSeconds);
+  const bytesPerSample = 2;
+  const dataSize = numSamples * bytesPerSample;
+  const buffer = Buffer.alloc(44 + dataSize);
+
+  buffer.write("RIFF", 0);
+  buffer.writeUInt32LE(36 + dataSize, 4);
+  buffer.write("WAVE", 8);
+  buffer.write("fmt ", 12);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * bytesPerSample, 28);
+  buffer.writeUInt16LE(bytesPerSample, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write("data", 36);
+  buffer.writeUInt32LE(dataSize, 40);
+
+  const clicks = [0.03, 0.12, 0.21, 0.32, 0.44, 0.56];
+
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / sampleRate;
+    let sample = 0;
+
+    for (const start of clicks) {
+      const dt = t - start;
+
+      if (dt >= 0 && dt < 0.045) {
+        const envelope = Math.exp(-dt * 90);
+        const tone =
+          Math.sin(2 * Math.PI * 1900 * dt) +
+          0.5 * Math.sin(2 * Math.PI * 3100 * dt);
+        const noise = (Math.random() * 2 - 1) * 0.35;
+
+        sample += envelope * (tone * 0.45 + noise);
+      }
+    }
+
+    const value = Math.max(-1, Math.min(1, sample)) * 0.45 * 32767;
+    buffer.writeInt16LE(Math.round(value), 44 + i * 2);
+  }
+
+  return buffer;
+}
+
+const TYPING_SOUND_WAV = createTypingSoundWav();
+
+fastify.get("/typing-sound.wav", async (request, reply) => {
+  reply
+    .header("Content-Type", "audio/wav")
+    .header("Cache-Control", "public, max-age=86400")
+    .send(TYPING_SOUND_WAV);
+});
 fastify.get("/", async () => {
   return {
     ok: true,
@@ -937,7 +1044,11 @@ fastify.register(async function (fastify) {
             role: "user",
             content: userText,
           });
+                    const typingPlayed = playTypingSoundIfNeeded(ws, callSid, userText);
 
+          if (typingPlayed) {
+            await sleep(500);
+          }
           const response = await aiResponse(conversation);
 
           conversation.push({
@@ -1001,12 +1112,13 @@ fastify.register(async function (fastify) {
       const callSid = ws.callSid;
       const conversation = sessions.get(callSid) || [];
 
-      if (callSid && notifiedCalls.has(callSid)) {
-        console.log("CALL_CLOSED_AFTER_WHATSAPP_SENT", callSid);
-        sessions.delete(callSid);
-        closingCalls.delete(callSid);
-        return;
-      }
+  if (callSid && notifiedCalls.has(callSid)) {
+  console.log("CALL_CLOSED_AFTER_WHATSAPP_SENT", callSid);
+  sessions.delete(callSid);
+  closingCalls.delete(callSid);
+  typingSoundCooldown.delete(callSid);
+  return;
+}
 
       if (callSid) {
         try {
@@ -1032,10 +1144,11 @@ fastify.register(async function (fastify) {
         }
       }
 
-      if (callSid) {
-        sessions.delete(callSid);
-        closingCalls.delete(callSid);
-      }
+   if (callSid) {
+  sessions.delete(callSid);
+  closingCalls.delete(callSid);
+  typingSoundCooldown.delete(callSid);
+}
     });
   });
 });
