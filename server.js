@@ -38,13 +38,13 @@ const alertDotsSent = new Set();
 const completedWhatsAppChats = new Map();
 
 const TYPING_SOUND_URL =
-  process.env.TYPING_SOUND_URL || `${DOMAIN}/typing-sound.wav`;
+  process.env.TYPING_SOUND_URL || `${DOMAIN}/typing-keyboard-v2.wav`;
 
 const typingSoundCooldown = new Map();
 
 console.log(
   "PATCH_VERSION",
-  "github_clean_server_whatsapp_template_v7_multiple_team_numbers"
+  "github_clean_server_whatsapp_template_v8_typing_keyboard_sound"
 );
 console.log("ANA_PROMPT_ACTIVE:", SYSTEM_PROMPT.slice(0, 250));
 
@@ -170,6 +170,7 @@ function isShortClosureReply(text) {
     clean
   );
 }
+
 function isUsefulInfoForTypingSound(text) {
   const clean = normalizeText(text);
 
@@ -186,6 +187,7 @@ function isUsefulInfoForTypingSound(text) {
     /(me llamo|soy|mi nombre|a nombre de|whatsapp|telefono|teléfono|contacto|llamame|llámame|numero|número|mismo numero|mismo número|mismo telefono|mismo teléfono|donde llamo)/i.test(clean)
   );
 }
+
 function playTypingSoundIfNeeded(ws, callSid, userText) {
   if (!callSid || !TYPING_SOUND_URL) return false;
   if (!ws || ws.readyState !== 1) return false;
@@ -216,6 +218,7 @@ function playTypingSoundIfNeeded(ws, callSid, userText) {
     return false;
   }
 }
+
 function getCompletedWhatsAppChat(conversationKey) {
   const item = completedWhatsAppChats.get(conversationKey);
 
@@ -795,7 +798,7 @@ async function sendWhatsAppSummary(
 
 function createTypingSoundWav() {
   const sampleRate = 8000;
-  const durationSeconds = 0.65;
+  const durationSeconds = 0.72;
   const numSamples = Math.floor(sampleRate * durationSeconds);
   const bytesPerSample = 2;
   const dataSize = numSamples * bytesPerSample;
@@ -815,28 +818,68 @@ function createTypingSoundWav() {
   buffer.write("data", 36);
   buffer.writeUInt32LE(dataSize, 40);
 
-  const clicks = [0.03, 0.12, 0.21, 0.32, 0.44, 0.56];
+  const keyStrokes = [
+    { t: 0.040, gain: 0.85, f1: 420, f2: 1150 },
+    { t: 0.105, gain: 0.70, f1: 510, f2: 1260 },
+    { t: 0.172, gain: 0.80, f1: 460, f2: 1080 },
+    { t: 0.245, gain: 0.68, f1: 560, f2: 1350 },
+    { t: 0.330, gain: 0.86, f1: 390, f2: 1020 },
+    { t: 0.420, gain: 0.72, f1: 530, f2: 1210 },
+    { t: 0.505, gain: 0.78, f1: 470, f2: 1130 },
+    { t: 0.610, gain: 0.65, f1: 600, f2: 1400 },
+  ];
+
+  let seed = 987654321;
+  let lowNoise = 0;
+
+  function random() {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  }
 
   for (let i = 0; i < numSamples; i++) {
     const t = i / sampleRate;
+    const rawNoise = random() * 2 - 1;
+
+    lowNoise = lowNoise * 0.72 + rawNoise * 0.28;
+
+    const sharpNoise = rawNoise - lowNoise;
     let sample = 0;
 
-    for (const start of clicks) {
-      const dt = t - start;
+    for (const key of keyStrokes) {
+      const dt = t - key.t;
 
-      if (dt >= 0 && dt < 0.045) {
-        const envelope = Math.exp(-dt * 90);
-        const tone =
-          Math.sin(2 * Math.PI * 1900 * dt) +
-          0.5 * Math.sin(2 * Math.PI * 3100 * dt);
-        const noise = (Math.random() * 2 - 1) * 0.35;
+      if (dt < 0 || dt > 0.085) continue;
 
-        sample += envelope * (tone * 0.45 + noise);
+      if (dt < 0.05) {
+        const clickEnvelope = Math.exp(-dt * 155);
+        const bodyEnvelope = Math.exp(-dt * 42);
+        const plasticBody =
+          Math.sin(2 * Math.PI * key.f1 * dt) * 0.22 +
+          Math.sin(2 * Math.PI * key.f2 * dt) * 0.09;
+
+        sample +=
+          key.gain *
+          (sharpNoise * 0.34 * clickEnvelope +
+            lowNoise * 0.36 * bodyEnvelope +
+            plasticBody * bodyEnvelope);
+      }
+
+      if (dt >= 0.045 && dt < 0.085) {
+        const releaseDt = dt - 0.045;
+        const releaseEnvelope = Math.exp(-releaseDt * 120);
+
+        sample +=
+          key.gain *
+          0.18 *
+          (sharpNoise * 0.70 +
+            Math.sin(2 * Math.PI * (key.f2 + 260) * releaseDt) * 0.30) *
+          releaseEnvelope;
       }
     }
 
-    const value = Math.max(-1, Math.min(1, sample)) * 0.45 * 32767;
-    buffer.writeInt16LE(Math.round(value), 44 + i * 2);
+    const limited = Math.tanh(sample * 1.25) * 0.55;
+    buffer.writeInt16LE(Math.round(limited * 32767), 44 + i * 2);
   }
 
   return buffer;
@@ -844,18 +887,19 @@ function createTypingSoundWav() {
 
 const TYPING_SOUND_WAV = createTypingSoundWav();
 
-fastify.get("/typing-sound.wav", async (request, reply) => {
+fastify.get("/typing-keyboard-v2.wav", async (request, reply) => {
   reply
     .header("Content-Type", "audio/wav")
-    .header("Cache-Control", "public, max-age=86400")
+    .header("Cache-Control", "no-store")
     .send(TYPING_SOUND_WAV);
 });
+
 fastify.get("/", async () => {
   return {
     ok: true,
     service: "ana-200gruas",
     ws: "/ws",
-    version: "github_clean_server_whatsapp_template_v7_multiple_team_numbers",
+    version: "github_clean_server_whatsapp_template_v8_typing_keyboard_sound",
   };
 });
 
@@ -1044,11 +1088,13 @@ fastify.register(async function (fastify) {
             role: "user",
             content: userText,
           });
-                    const typingPlayed = playTypingSoundIfNeeded(ws, callSid, userText);
+
+          const typingPlayed = playTypingSoundIfNeeded(ws, callSid, userText);
 
           if (typingPlayed) {
             await sleep(500);
           }
+
           const response = await aiResponse(conversation);
 
           conversation.push({
@@ -1112,13 +1158,13 @@ fastify.register(async function (fastify) {
       const callSid = ws.callSid;
       const conversation = sessions.get(callSid) || [];
 
-  if (callSid && notifiedCalls.has(callSid)) {
-  console.log("CALL_CLOSED_AFTER_WHATSAPP_SENT", callSid);
-  sessions.delete(callSid);
-  closingCalls.delete(callSid);
-  typingSoundCooldown.delete(callSid);
-  return;
-}
+      if (callSid && notifiedCalls.has(callSid)) {
+        console.log("CALL_CLOSED_AFTER_WHATSAPP_SENT", callSid);
+        sessions.delete(callSid);
+        closingCalls.delete(callSid);
+        typingSoundCooldown.delete(callSid);
+        return;
+      }
 
       if (callSid) {
         try {
@@ -1144,11 +1190,11 @@ fastify.register(async function (fastify) {
         }
       }
 
-   if (callSid) {
-  sessions.delete(callSid);
-  closingCalls.delete(callSid);
-  typingSoundCooldown.delete(callSid);
-}
+      if (callSid) {
+        sessions.delete(callSid);
+        closingCalls.delete(callSid);
+        typingSoundCooldown.delete(callSid);
+      }
     });
   });
 });
